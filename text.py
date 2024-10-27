@@ -23,6 +23,22 @@ def change_directory(path):
         print(f"The specified path is not a directory: {path}")
     except Exception as e:
         print(f"Error changing directory: {e}")
+def make_directory(directory_name):
+    try:
+        os.mkdir(directory_name)
+        print(f"Directory '{directory_name}' created.")
+    except FileExistsError:
+        print(f"The directory '{directory_name}' already exists.")
+    except Exception as e:
+        print(f"Error creating directory: {e}")
+def delete_file(filename):
+    try:
+        os.remove(filename)
+        print(f"File '{filename}' deleted.")
+    except FileNotFoundError:
+        print(f"The system cannot find the file specified: {filename}")
+    except Exception as e:
+        print(f"Error deleting file: {e}")
 
 def list_directory():
     print("Directory contents:")
