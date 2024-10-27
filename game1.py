@@ -4,176 +4,142 @@ import tempfile
 import psutil
 import time
 import json
-from send2trash import send2trash
-import tkinter as tk
-from tkinter import messagebox, simpledialog, filedialog, Listbox, Scrollbar
+import threading
+import schedule
+import smtplib
+import csv
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from tkinter import *
+from tkinter import messagebox, filedialog
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# 默认备份路径
+# 配置文件和默认设置
+CONFIG_FILE = "cleanup_config.json"
 DEFAULT_BACKUP_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads", "Backup")
+AUTO_CLEAN_INTERVAL = 7  # 默认每7天自动清理一次
+LOG_FILE = "cleanup_log.csv"  # 日志文件，用于记录清理历史
 
+# 读取和保存配置文件
+def read_config():
+    try:
+        with open(CONFIG_FILE, "r") as config_file:
+            config = json.load(config_file)
+            return config
+    except FileNotFoundError:
+        return {"backup_folder": DEFAULT_BACKUP_FOLDER, "clean_interval": AUTO_CLEAN_INTERVAL, "whitelist": []}
 
-# 记录日志的函数
-def log_action(action):
-    with open("cleanup_log.txt", "a") as log_file:
-        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {action}\n")
+def save_config(config):
+    with open(CONFIG_FILE, "w") as config_file:
+        json.dump(config, config_file)
 
+# 保存日志
+def log_cleanup(action, files_deleted):
+    with open(LOG_FILE, "a", newline='') as csvfile:
+        log_writer = csv.writer(csvfile)
+        log_writer.writerow([datetime.now(), action, len(files_deleted), files_deleted])
 
-# 清理临时文件夹
-def clear_temp_folder(backup_folder):
+# 清理模块
+def clear_temp_folder(backup_folder, whitelist):
     temp_folder = tempfile.gettempdir()
     deleted_files = []
-    try:
-        for filename in os.listdir(temp_folder):
-            file_path = os.path.join(temp_folder, filename)
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                # 先备份到指定文件夹
-                shutil.move(file_path, backup_folder)
-                deleted_files.append(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)  # 直接删除文件夹
-        log_action(f"清理临时文件夹: {deleted_files}")
-        return deleted_files
-    except Exception as e:
-        print(f"清理时出错: {e}")
-        return []
+    for filename in os.listdir(temp_folder):
+        file_path = os.path.join(temp_folder, filename)
+        if os.path.isfile(file_path) and file_path not in whitelist:
+            shutil.move(file_path, backup_folder)
+            deleted_files.append(file_path)
+    log_cleanup("Temporary Files Cleanup", deleted_files)
+    return deleted_files
 
-
-# 清理下载文件夹中的旧文件
-def clear_download_folder(backup_folder, days=100):
+def clear_download_folder(backup_folder, whitelist, days=100):
     download_folder = os.path.join(os.path.expanduser("~"), "Downloads")
     now = time.time()
     deleted_files = []
     for filename in os.listdir(download_folder):
         file_path = os.path.join(download_folder, filename)
-        if os.path.isfile(file_path) and (now - os.path.getmtime(file_path)) > days * 86400:
-            # 先备份到指定文件夹
+        if os.path.isfile(file_path) and file_path not in whitelist and (now - os.path.getmtime(file_path)) > days * 86400:
             shutil.move(file_path, backup_folder)
             deleted_files.append(file_path)
-    log_action(f"下载文件夹清理（超过{days}天的文件）: {deleted_files}")
+    log_cleanup("Download Folder Cleanup", deleted_files)
     return deleted_files
 
+# 清理操作函数
+def run_cleanup():
+    config = read_config()
+    backup_folder = config.get("backup_folder", DEFAULT_BACKUP_FOLDER)
+    whitelist = config.get("whitelist", [])
 
-# 从备份恢复文件
-def restore_files_from_backup(backup_folder, files_to_restore):
-    restored_files = []
-    for file_name in files_to_restore:
-        source = os.path.join(backup_folder, file_name)
-        destination = os.path.join(os.path.expanduser("~"), "Downloads", file_name)
-        try:
-            shutil.move(source, destination)  # 移动到下载文件夹
-            log_action(f"恢复文件: {file_name}")
-            restored_files.append(file_name)
-        except Exception as e:
-            print(f"恢复文件时出错: {e}")
-    return restored_files
+    deleted_temp_files = clear_temp_folder(backup_folder, whitelist)
+    deleted_download_files = clear_download_folder(backup_folder, whitelist)
+    messagebox.showinfo("清理完成", f"已清理 {len(deleted_temp_files)} 个临时文件，{len(deleted_download_files)} 个下载文件。")
 
+# 邮件通知模块
+def send_email_report(subject, body, recipient_email):
+    config = read_config()
+    sender_email = config.get("email")
+    sender_password = config.get("email_password")
 
-# 读取配置文件
-def read_config():
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = recipient_email
+    msg['Subject'] = subject
+
+    msg.attach(MIMEText(body, 'plain'))
     try:
-        with open("cleanup_config.json", "r") as config_file:
-            config = json.load(config_file)
-            return config
-    except FileNotFoundError:
-        print("配置文件未找到，使用默认设置。")
-        return {}
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+    except Exception as e:
+        print(f"Failed to send email: {e}")
 
+# 自动清理设置
+def setup_auto_cleanup():
+    config = read_config()
+    interval = config.get("clean_interval", AUTO_CLEAN_INTERVAL)
+    schedule.every(interval).days.do(run_cleanup)
 
-# 保存配置文件
-def save_config(backup_folder):
-    config = {"backup_folder": backup_folder}
-    with open("cleanup_config.json", "w") as config_file:
-        json.dump(config, config_file)
+    def scheduler_loop():
+        while True:
+            schedule.run_pending()
+            time.sleep(3600)
 
+    threading.Thread(target=scheduler_loop, daemon=True).start()
 
-# GUI 类
-class CleanupApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("系统清理工具")
-
-        self.config = read_config()
-        self.backup_folder = self.config.get("backup_folder", DEFAULT_BACKUP_FOLDER)
-
-        # 创建备份路径输入框
-        self.backup_label = tk.Label(root, text="备份文件夹路径:")
-        self.backup_label.pack()
-
-        self.backup_entry = tk.Entry(root, width=50)
-        self.backup_entry.insert(0, self.backup_folder)
-        self.backup_entry.pack()
-
-        self.browse_button = tk.Button(root, text="选择备份文件夹", command=self.browse_backup_folder)
-        self.browse_button.pack()
-
-        # 清理按钮
-        self.clean_temp_button = tk.Button(root, text="清理临时文件夹", command=self.clean_temp_folder)
-        self.clean_temp_button.pack()
-
-        self.clean_download_button = tk.Button(root, text="清理下载文件夹中超过100天的旧文件",
-                                               command=self.clean_download_folder)
-        self.clean_download_button.pack()
-
-        # 恢复文件按钮
-        self.restore_button = tk.Button(root, text="恢复文件", command=self.restore_files)
-        self.restore_button.pack()
-
-        # 文件列表框
-        self.file_list = Listbox(root, selectmode='multiple', height=10)
-        self.file_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.scrollbar = Scrollbar(root)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_list.config(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.config(command=self.file_list.yview)
-
-        # 保存设置按钮
-        self.save_button = tk.Button(root, text="保存备份路径设置", command=self.save_settings)
-        self.save_button.pack()
-
-    def browse_backup_folder(self):
-        folder_selected = filedialog.askdirectory()
-        if folder_selected:
-            self.backup_entry.delete(0, tk.END)
-            self.backup_entry.insert(0, folder_selected)
-
-    def clean_temp_folder(self):
-        deleted_files = clear_temp_folder(self.backup_entry.get())
-        if deleted_files:
-            messagebox.showinfo("清理完成", f"清理了以下临时文件:\n{', '.join(deleted_files)}")
-        else:
-            messagebox.showinfo("清理完成", "临时文件夹没有清理任何文件。")
-
-    def clean_download_folder(self):
-        deleted_files = clear_download_folder(self.backup_entry.get())
-        if deleted_files:
-            messagebox.showinfo("清理完成", f"清理了以下过期下载文件:\n{', '.join(deleted_files)}")
-        else:
-            messagebox.showinfo("清理完成", "下载文件夹没有清理任何文件。")
-
-    def restore_files(self):
-        selected_files = self.file_list.curselection()
-        files_to_restore = [self.file_list.get(i) for i in selected_files]
-        restored_files = restore_files_from_backup(self.backup_entry.get(), files_to_restore)
-        if restored_files:
-            messagebox.showinfo("恢复完成", f"已恢复文件:\n{', '.join(restored_files)}")
-        else:
-            messagebox.showinfo("恢复完成", "没有文件被恢复。")
-        self.update_file_list()
-
-    def update_file_list(self):
-        self.file_list.delete(0, tk.END)
-        backup_files = os.listdir(self.backup_entry.get())
-        for file_name in backup_files:
-            self.file_list.insert(tk.END, file_name)
-
-    def save_settings(self):
-        save_config(self.backup_entry.get())
-        messagebox.showinfo("保存设置", "备份路径设置已保存。")
-
-
-# 运行主程序
+# 主程序入口
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = CleanupApp(root)
+    config = read_config()
+    root = Tk()
+    root.title("智能系统清理工具")
+
+    # 备份文件夹配置
+    Label(root, text="备份文件夹:").pack()
+    backup_entry = Entry(root, width=50)
+    backup_entry.insert(0, config.get("backup_folder", DEFAULT_BACKUP_FOLDER))
+    backup_entry.pack()
+
+    def save_settings():
+        config['backup_folder'] = backup_entry.get()
+        config['clean_interval'] = int(interval_entry.get())
+        save_config(config)
+        messagebox.showinfo("设置已保存", "备份文件夹和清理间隔设置已保存。")
+
+    Button(root, text="保存设置", command=save_settings).pack()
+
+    # 清理间隔配置
+    Label(root, text="清理间隔（天）:").pack()
+    interval_entry = Entry(root, width=5)
+    interval_entry.insert(0, str(config.get("clean_interval", AUTO_CLEAN_INTERVAL)))
+    interval_entry.pack()
+
+    # 手动清理按钮
+    def start_manual_cleanup():
+        response = messagebox.askyesno("确认清理", "是否开始清理？")
+        if response:
+            run_cleanup()
+
+    Button(root, text="开始清理", command=start_manual_cleanup).pack()
+
+    # 启动自动清理和监控
+    setup_auto_cleanup()
     root.mainloop()
