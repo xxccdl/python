@@ -13,6 +13,21 @@ bios_settings = {
 }
 
 # 模拟 BIOS 启动过程
+def change_directory(path):
+    try:
+        os.chdir(path)
+        print(f"Changed directory to {os.getcwd()}")
+    except FileNotFoundError:
+        print(f"The system cannot find the path specified: {path}")
+    except NotADirectoryError:
+        print(f"The specified path is not a directory: {path}")
+    except Exception as e:
+        print(f"Error changing directory: {e}")
+
+def list_directory():
+    print("Directory contents:")
+    for item in os.listdir():
+        print(item)
 def bios_startup():
     print("PhoenixBIOS 4.0 Release 6.0.3")
     time.sleep(0.5)
